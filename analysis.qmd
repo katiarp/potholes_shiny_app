@@ -1,0 +1,228 @@
+---
+title: "Potholes App Flow"
+format: html
+code-overflow: wrap
+---
+```{r}
+#| message: false
+#| warning: false
+library(tidyverse)
+library(fpp3)
+library(gt)
+```
+
+# Tab 1
+## Data Prep
+```{r}
+# app inputs
+start_month <- yearmonth('2016 Jun')
+end_month   <- yearmonth('2026 Oct')  
+split_month <- yearmonth('2025 Oct')   
+h_months    <- 12                     
+
+dir.create('figures', showWarnings = FALSE)
+```
+
+```{r}
+# keeping only unique requests
+pothole <- read_csv('data/get_it_done_pothole_requests_datasd.csv', show_col_types = FALSE) |> 
+  transmute(
+    month = yearmonth(date_requested),
+    council_district = factor(council_district),
+    is_unique = is.na(service_request_parent_id)
+  ) |> 
+  filter(month >= start_month, month <= end_month)
+
+# helper function for aggregation
+summarise_monthly <- function(data, ...){
+  data |> 
+    group_by(month, ...) |> 
+    summarise(
+      requests_unique = sum(is_unique),
+      total_reports = n(),
+      .groups = 'drop'
+    )
+}
+```
+
+```{r}
+# monthly by council district
+pothole_monthly_district <- pothole |> 
+  # 0.16% of requests have no district and will be excluded
+  filter(!is.na(council_district)) |> 
+  summarise_monthly(council_district) |> 
+  as_tsibble(index = month, key = council_district) |> 
+  fill_gaps(requests_unique = 0L, total_reports = 0L, .full=TRUE)
+
+# monthly citywide requests 
+pothole_monthly <- pothole |> 
+  summarise_monthly() |> 
+  as_tsibble(index = month) |> 
+  fill_gaps(requests_unique = 0L, total_reports = 0L)
+
+# small file for Shiny instead of raw CSV
+saveRDS(pothole_monthly_district, 'data/potholes_monthly_district.rds')
+
+pothole_monthly_district
+```
+
+```{r}
+# train validation split 
+train_district <- pothole_monthly_district |> filter(month <= split_month)
+valid_district <- pothole_monthly_district |> filter(month > split_month)
+```
+
+## Exploration
+
+```{r}
+pothole_monthly |>
+  autoplot(requests_unique) +
+  geom_vline(xintercept = as.Date(split_month + 1),
+             linetype = 'dashed', linewidth = 0.5, colour = 'orange') +
+  labs(
+    title    = 'Unique Pothole Requests, Citywide',
+    subtitle = 'Dashed line marks the start of the validation period',
+    y        = 'Number of unique requests',
+    x        = 'Month'
+  )
+pothole_monthly
+```
+
+```{r}
+#| fig-width: 9
+#| fig-height: 12
+
+requests_by_council_plot <- pothole_monthly_district |> 
+  autoplot(requests_unique) + 
+  facet_wrap(~ council_district, ncol = 1, scales = 'free_y') +
+  labs(
+    title = 'Unique Pothole Requests by Council District',
+    y = 'Number of Unique Requests',
+    x = 'Month',
+    caption = '0.16% of requests had no council district and are excluded'
+  ) + 
+  theme(legend.position = 'none')
+
+ggsave('figures/requests_by_council.png',
+       plot = requests_by_council_plot,
+       width = 10, height = 14, dpi = 300)
+
+requests_by_council_plot
+```
+
+# Tab 2
+## Model Building 
+
+### Fit
+```{r}
+fit <- train_district |> 
+  model(
+    TSLM = TSLM(requests_unique ~ trend() + season()),
+    ETS = ETS(requests_unique),
+    ARIMA = ARIMA(requests_unique)
+  ) |> 
+  mutate(ENSEMBLE = (ETS + ARIMA) / 2)
+```
+
+```{r}
+specs_table <- fit |> as_tibble() |> 
+  transmute(
+    `Council District` = council_district, 
+    ETS = map_chr(ETS, model_sum), 
+    ARIMA = map_chr(ARIMA, model_sum))
+
+specs_table |> gt()
+```
+
+### Training Accuracy
+```{r}
+acc_train_table <- bind_rows(
+  accuracy(fit) |> mutate(window = 'Training')
+  ) |> 
+  select(council_district, .model, window, RMSE, MAE, MAPE) |> 
+  arrange(.model, MAPE)
+
+acc_train_table |> gt()
+```
+
+### Forecast Accuracy
+
+```{r}
+fc <- fit |> forecast(h = h_months)
+
+acc_val_table <- bind_rows(
+  accuracy(fc, pothole_monthly_district) |> mutate(window = 'Validation')
+) |> 
+  select(council_district, .model, window, RMSE, MAE, MAPE) |> 
+  arrange(.model, MAPE)
+
+acc_val_table |> gt()
+```
+
+
+```{r}
+acc_tbl <- bind_rows(
+  accuracy(fit) |> mutate(window = 'Training'),
+  accuracy(fc, pothole_monthly_district) |> mutate(window = 'Validation')
+) |>
+  select(council_district, .model, window, RMSE, MAE, MAPE) |>
+  arrange(council_district, window, RMSE)
+
+acc_tbl
+```
+
+
+```{r}
+val_rmse <- acc_tbl |>
+  filter(window == 'Validation') |>
+  select(council_district, .model, RMSE) |>
+  pivot_wider(names_from = .model, values_from = RMSE) |>
+  rowwise() |>
+  mutate(`Best Model` = c('TSLM', 'ETS', 'ARIMA', 'Ensemble')[which.min(c(TSLM, ETS, ARIMA, ENSEMBLE))]) |>
+  ungroup()
+
+val_rmse |> gt() |> fmt_number(decimals = 1)
+```
+
+# Tab 3 
+## Forecast
+
+
+```{r}
+#| fig-width: 9
+#| fig-height: 12
+
+forecast_by_council_p <- fc |> 
+  autoplot(pothole_monthly_district |> filter_index('2025 Jan' ~ .), level = 80) +
+  facet_wrap(~ council_district, ncol = 1, scales = 'free_y') + 
+  labs( 
+    title = 'Unique Pothole Request Forecasts by Council District',
+    y = 'Number of Unique Requests',
+    x = 'Month'
+  ) + theme_minimal()
+
+ggsave('figures/forecasts_by_council.png',
+       plot = forecast_by_council_p,
+       width = 10, height = 14, dpi = 300)
+
+forecast_by_council_p
+```
+
+
+```{r}
+#| fig-width: 10
+#| fig-height: 11
+forecast_by_model <- fc |> 
+  autoplot(pothole_monthly_district |> filter_index('2025 Jan' ~ .), level = 80) +
+  facet_grid(council_district ~ .model, scales = 'free_y') + 
+  labs( 
+    title = 'Unique Pothole Request Forecasts by Council District',
+    y = 'Number of Unique Requests',
+    x = 'Month'
+  ) 
+
+ggsave('figures/forecast_by_model.png',
+    plot = forecast_by_model,
+    width = 12, height = 16, dpi = 300)
+forecast_by_model
+```
