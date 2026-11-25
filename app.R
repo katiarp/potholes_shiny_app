@@ -24,7 +24,7 @@ potholes <- potholes |>
   mutate(council_district = factor(
     council_district,
     levels = c('Citywide', as.character(1:9))
-  )) |>
+  )) |> 
   as_tsibble(index = month, key = council_district)
 
 default_districts <- c('6', '8')
@@ -134,10 +134,6 @@ server <- function(input, output, session) {
       )
   })
 
-  # # requests by council district
-  # observeEvent(input$clear_btn, {
-  #   updateSelectInput(session, 'districts', selected = character(0))
-  # })
   # requests by council district and default reset
   observeEvent(input$reset, {
     updateSelectInput(session, 'districts', selected = default_districts)
@@ -187,7 +183,6 @@ server <- function(input, output, session) {
         month <= split_used()
       )
   })
-
   # fits all four models; check boxes filter display
   fit <- reactive({
     train() |>
@@ -200,7 +195,6 @@ server <- function(input, output, session) {
   }) |>
     bindEvent(input$fit_btn, ignoreNULL = FALSE)
 
-  # output$fit_check <- renderPrint(fit())
   # model specifications
   output$spec_tble <- renderTable({
     fit() |>
@@ -271,7 +265,8 @@ server <- function(input, output, session) {
     history <- potholes |>
       filter(
         council_district %in% unique(fit()$council_district),
-        month >= split_used() - 24
+        month >= split_used() - 24,
+        month <= split_used() + input$h
       )
 
     model_cols <- c(TSLM = '#7B61FF', ETS = '#00A6A6', ARIMA = '#E4572E', ENSEMBLE = '#76B041')
