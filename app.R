@@ -43,14 +43,13 @@ ui <- fluidPage(
         multiple = TRUE
       ),
       actionButton('reset', 'Reset to defaults', class = 'btn-primary'),
-      # actionButton("clear_btn", "Clear Selection", class = 'btn-primary'),
       sliderInput(
         'date_range', 'Date range',
         min = as.Date(first_month), max = as.Date(last_month),
         value = c(as.Date(first_month), as.Date(last_month)),
         timeFormat = '%b %Y'
       ),
-      # helpText('Changes view only. Models always use all data up to the split.'),
+      helpText('Changes view only. Models always use all data up to the split.'),
       sliderInput(
         'split', 'Last training month',
         # three years minimum for training
@@ -83,9 +82,9 @@ ui <- fluidPage(
         ),
         tabPanel(
           'Model Specs & Accuracy',
-          h4('Auto-selected model specifications'),
+          h4('Auto-selected Model Specifications'),
           tableOutput('spec_tble'),
-          h4('Accuracy: training vs. validation'),
+          h4('Training vs. Validation Accuracy'),
           tableOutput('acc_tbl'),
           helpText(textOutput('acc_note'))
         ),
@@ -164,7 +163,7 @@ server <- function(input, output, session) {
         labeller = labeller(council_district = \(x) ifelse(x == 'Citywide', x, paste('District', x))),
         scales = if (input$free_y_overview) 'free_y' else 'fixed'
         # scales = 'free_y'
-      ) +
+      ) + coord_cartesian(xlim = as.Date(input$date_range)) +
       labs(
         title = 'Unique pothole requests by council district',
         subtitle = 'Dashed line = start of validation period',
@@ -249,11 +248,11 @@ server <- function(input, output, session) {
   }, striped = TRUE, bordered = TRUE, digits = 1)
 
   output$best_note <- renderText(paste0(
-    'Values show validation ', input$metric, ' (lower is better) for ',
-    format(split_used() + 1), ' – ', format(last_month),
+    'Values show validation ', input$metric, ' for ',
+    format(split_used() + 1), ' - ', format(last_month),
     '. Only checked models are compared.'
   ))
-
+  
   # forecasts vs actuals: history starts 24 months before the split
   # (split_used() moves only on Fit click, so plot and models always match)
   output$forecast_plot <- renderPlot({
