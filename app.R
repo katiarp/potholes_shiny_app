@@ -1,6 +1,7 @@
 library(shiny)
 library(tidyverse)
 library(fpp3)
+library(urca)
 
 # loads once outside server
 potholes <- readRDS('data/potholes_monthly_district.rds')
@@ -252,7 +253,7 @@ server <- function(input, output, session) {
     format(split_used() + 1), ' - ', format(last_month),
     '. Only checked models are compared.'
   ))
-  
+
   # forecasts vs actuals: history starts 24 months before the split
   # (split_used() moves only on Fit click, so plot and models always match)
   output$forecast_plot <- renderPlot({
